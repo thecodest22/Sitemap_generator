@@ -1,77 +1,125 @@
-# TODO завернуть все это в скрипт с парсером из командной строки
+#!/usr/bin/env python3
+# -*- coding: UTF-8 -*-
+
+from argparse import ArgumentParser
+from re import search
+from sys import exit
+from shutil import rmtree, copyfileobj
+from gzip import open as gzip_open
 from itertools import islice
 from pathlib import Path
 
-from lxml import etree
-
 
 try:
-    # Парсим файл выгрузки, получаем ElementTree
-    # TODO запрос расположения файла из командной строки - обязательный аргумент
-    data_input = etree.parse('articles.xml.gz')
-except IOError:  # TODO человеческий вывод ошибок
-    print('File does not exist')
-except etree.XMLSyntaxError:
-    print('File contains invalid elements')
-else:
-    # Создадим целевую папку
-    # TODO запрос расположения папки для сайтмапов из командной строки - обязательный аргумент
-    output_dir_path = Path('zip77.ru/')
-    output_dir_path.mkdir(exist_ok=True)
+    from lxml import etree
+except ModuleNotFoundError as e:
+    print(e.msg, "Make sure it has been installed to the active environment!", sep='\n')
+    exit(1)
 
-    # Создадим корневой элемент и дерево для возможного(!) сайтмап-индекса
-    sitemap_index_root_elem = etree.Element('sitemapindex', xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
-    sitemap_index_tree = etree.ElementTree(sitemap_index_root_elem)
 
-    target_parent_elem = data_input.find('shop/offers')  # Находим offers, чтоб скипнуть первый тег url: это же не товар
-    # Создадим итератор от 'offers' для дальнейших извлечений содержимого по тегу 'url'
-    url_iter = target_parent_elem.iter('url')
+def addresses_num_validator(digits: str) -> int:
+    digits = int(digits)
+    if not 0 < digits <= 50_000:
+        raise ValueError
+    return digits
 
-    # Объявляем счетчик имен файлов сайтмапа. Идем циклом по всем элементам с тегом 'url' внутри тегов 'offers'
-    file_number = 0
+
+def priority_range_validator(priority: str) -> float:
+    priority = float(priority)
+    if not 0 <= priority <= 1:
+        raise ValueError
+    return priority
+
+
+def filename_prefix_validator(prefix: str) -> str:
+    if search(r'[#<>$+%!`&*‘|{}?"=/:\\ @[\]]', prefix):  # I'm not sure about this set of symbols!
+        raise ValueError
+    return prefix
+
+
+def create_parser() -> ArgumentParser:
+    parser = ArgumentParser(description='Creates a sitemap from an uploaded XML-file')
+    parser.add_argument('-f', '--file', type=Path, required=True, help='Path to an XML-file (or a gz-archive with it)')
+    parser.add_argument('-o', '--output dir', type=Path, default='./zip77.ru',
+                        help='Path to the directory where the sitemap will be placed')
+    parser.add_argument('-a', '--addresses per file', type=addresses_num_validator, default=50_000,
+                        help='Max addresses number for each sitemap file (up to 50k)')
+    parser.add_argument('-p', '--priority url', type=priority_range_validator, default=0.3,
+                        help='URLs priority (from 0 to 1.0')
+    parser.add_argument('-P', '--filename prefix', type=filename_prefix_validator, default='sitemap',
+                        help='Prefix to use in output filenames, eg. "prefix.xml", "prefix1.xml"...')
+    parser.add_argument('-z', '--zip', action='store_true', help='Add sitemap archive files (.gz)')
+
+    return parser
+
+
+def handle(options) -> None:
+    input_xml_file: Path = options['file']
+    output_dir: Path = options['output dir']
+    entries_number: int = options['addresses per file']
+    urls_priority: float = options['priority url']
+    prefix: str = options['filename prefix']
+    need_zip: bool = options['zip']
+
+    try:
+        parsed_xml_data = etree.parse(input_xml_file)
+    except IOError:
+        print(f'File "{input_xml_file}" does not exist')
+        exit(1)
+    except etree.XMLSyntaxError:
+        print(f'File "{input_xml_file}" contains invalid elements')
+        exit(1)
+
+    if output_dir.exists():
+        rmtree(output_dir)
+    output_dir.mkdir(parents=True)
+
+    sitemap_index_root = etree.Element('sitemapindex', xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+    sitemap_index_tree = etree.ElementTree(sitemap_index_root)
+
+    parent_xml_elem = parsed_xml_data.find('shop/offers')
+    url_elements_iterator = parent_xml_elem.iter('url')
+
+    sitemap_file_number = 0
     while True:
-        # Создаем корневой элемент сайтмапа и дерево с ним
-        sitemap_root_element = etree.Element('urlset', xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
-        data_output = etree.ElementTree(sitemap_root_element)
-
-        # От итератора по 'url' будем айслайсом откусывать по 50к. Вся эта карусель позволит не грузить в память данные
-        # TODO запрос максимального количества ссылок в сайтмапе - необязательный аргумент (50к по дефолту)
-        for i_child_elem in islice(url_iter, 50_000):
-            if i_child_elem.text:
-                # TODO по-хорошему бы чекнуть файл robots.txt, чтобы адрес из i_child_elem.text не был в 'disallow'
-                # Добавим к родителю-корню обязательный элемент сайтмапа - 'url'
-                sitemap_url_element = etree.SubElement(sitemap_root_element, 'url')
-                # Добавим к родителю-url обязательный элемент 'loc' - собственно адрес страницы
+        sitemap_root = etree.Element('urlset', xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
+        data_output = etree.ElementTree(sitemap_root)
+        for i_url in islice(url_elements_iterator, entries_number):
+            if i_url.text:
+                sitemap_url_element = etree.SubElement(sitemap_root, 'url')
                 sitemap_loc_element = etree.SubElement(sitemap_url_element, 'loc')
-                # Задаем ему атрибут 'text' - это будет содержимое тега 'loc'.
-                # Контентом будет 'text' из каждого найденного элемента 'url' товара из файла выгрузки
-                sitemap_loc_element.text = i_child_elem.text
-                # Добавим к родителю-url необязательный элемент 'priority', установим ему значение '0.3'
-                # TODO запрос значения приоритета - необязательный аргумент (0.3 по дефолту)
+                sitemap_loc_element.text = i_url.text
                 sitemap_priority_element = etree.SubElement(sitemap_url_element, 'priority')
-                sitemap_priority_element.text = '0.3'
+                sitemap_priority_element.text = str(urls_priority)
 
-        # Проверяем, не получили ли мы пустой корневой элемент, т.е. не закончился ли url-итератор. Если да, рвем цЫкл
-        if not len(sitemap_root_element):
+        if not len(sitemap_root):
             break
 
-        # Делаем новый путь к файлу с учетом номера, пишем его (вызываем метод 'write' на дереве)
-        # TODO запрос префикса имени файла сайтмапа - необязательный аргумент ('sitemap' по дефолту)
-        output_file_path = output_dir_path / f'sitemap{file_number}.xml'
-        data_output.write(output_file_path, pretty_print=True, encoding='utf-8', xml_declaration=True)
-        # TODO реализовать сжатие в gzip выходных файлов - необязательный аргумент ('False' по дефолту)
+        output_file_path = output_dir / f'{prefix}{sitemap_file_number or ""}.xml'
 
-        # К корневому элементу сайтмап-индекса добавляем тег 'sitemap', а в него - 'loc'
-        sitemap_index_sitemap_elem = etree.SubElement(sitemap_index_root_elem, 'sitemap')
+        with output_file_path.open('wb+') as xml_output:
+            data_output.write(xml_output, pretty_print=True, encoding='utf-8', xml_declaration=True)
+            if need_zip:
+                with gzip_open(output_file_path.with_suffix('.xml.gz'), 'wb') as zipped_file:
+                    xml_output.seek(0)
+                    copyfileobj(xml_output, zipped_file)
+
+        sitemap_index_sitemap_elem = etree.SubElement(sitemap_index_root, 'sitemap')
         sitemap_index_loc_elem = etree.SubElement(sitemap_index_sitemap_elem, 'loc')
-        # К тегу 'loc' добавляем содержимое - собственно путь к файлу сайтмапа
         sitemap_index_loc_elem.text = str(output_file_path)
 
-        file_number += 1  # Инкрементим номер для имени файла сайтмапа
+        sitemap_file_number += 1
 
-    # По завершении цЫкла смотрим длину корня дерева сайтмап-индекса. Если больше 1, записываем файл сайтмап-индекса
-    if len(sitemap_index_root_elem) > 1:
-        output_file_path = output_dir_path / 'sitemap-index.xml'
-        sitemap_index_tree.write(output_file_path, pretty_print=True, encoding='utf-8', xml_declaration=True)
+    if len(sitemap_index_root) > 1:
+        output_sitemap_file = output_dir / 'sitemap-index.xml'
+        sitemap_index_tree.write(output_sitemap_file, pretty_print=True, encoding='utf-8', xml_declaration=True)
 
-    # TODO реализовать добавление информации о расположении сайтмапа (или сайтмап-индекса) в robots.txt
+
+def run() -> None:
+    parser = create_parser()
+    namespace = parser.parse_args()
+    handle(vars(namespace))
+
+
+if __name__ == "__main__":
+    run()
