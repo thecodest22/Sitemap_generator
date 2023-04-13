@@ -6,8 +6,9 @@ from lxml import etree
 URL_PRIORITY = '0.3'
 TARGET_NODE = '//offer/url'
 FILENAME_PREFIX = 'sitemap'
+UPLOAD_DATA_FILE = './articles.xml.gz'
 
-parsed_xml_tree = etree.parse('./articles.xml.gz')
+parsed_xml_tree = etree.parse(UPLOAD_DATA_FILE)
 
 iterator = parsed_xml_tree.iterfind(TARGET_NODE)
 
