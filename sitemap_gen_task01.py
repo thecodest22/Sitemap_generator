@@ -7,8 +7,7 @@ URL_PRIORITY = '0.3'
 TARGET_NODE = '//offer/url'
 FILENAME_PREFIX = 'sitemap'
 
-path_to_xml_file = Path(input('Укажите путь к файлу выгрузки: ')).resolve()
-parsed_xml_tree = etree.parse(path_to_xml_file)
+parsed_xml_tree = etree.parse('./articles.xml.gz')
 
 iterator = parsed_xml_tree.iterfind(TARGET_NODE)
 
