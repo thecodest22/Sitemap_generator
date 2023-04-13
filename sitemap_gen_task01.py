@@ -3,10 +3,10 @@ from pathlib import Path
 
 from lxml import etree
 
+UPLOAD_DATA_FILE = './articles.xml.gz'
+FILENAME_PREFIX = 'sitemap'
 URL_PRIORITY = '0.3'
 TARGET_NODE = '//offer/url'
-FILENAME_PREFIX = 'sitemap'
-UPLOAD_DATA_FILE = './articles.xml.gz'
 
 parsed_xml_tree = etree.parse(UPLOAD_DATA_FILE)
 
